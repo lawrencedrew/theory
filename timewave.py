@@ -1,3 +1,51 @@
+"""
+timewave.py — Timewave Zero / Novelty Theory Calculator for The Digital Labyrinth.
+
+Implements Terence McKenna's Timewave Zero algorithm: a fractal function derived
+from the King Wen sequence of the I Ching (64 hexagrams) that maps the flow of
+'novelty' (pattern-density, complexity, connectivity) across historical time.
+
+Two dataset variants are provided:
+  - 'watkins'  : The corrected dataset (Matthew Watkins, 1996).  Default.
+  - 'kelley'   : The original dataset as implemented by Royce Kelley,
+                  which contains a 'half-twist' error in the second half.
+
+The algorithm is a multi-scale fractal summation: for any target moment, it
+evaluates the 384-point data set at 16 different time-scale powers of 64 and
+sums the weighted contributions.  Lower output values indicate higher novelty
+(more connectivity, more strangeness); higher values indicate greater habit
+(repetition, consolidation).
+
+USAGE EXAMPLE:
+--------------
+1. Single novelty reading for today, relative to the 2012-12-21 zero date:
+
+       python timewave.py
+
+2. Reading for a specific date:
+
+       python timewave.py --date 1993-07-23
+
+3. Generate and save a novelty chart spanning 100 years before the zero date:
+
+       python timewave.py --plot --years 100
+
+4. Use the Kelley (original, uncorrected) dataset:
+
+       python timewave.py --mode kelley --date 2001-09-11
+
+5. Custom zero date (e.g. set your own attractor point):
+
+       python timewave.py --zero 2029-01-01 --date 2026-04-19 --plot
+
+Full CLI help:
+
+       python timewave.py --help
+
+NOTE: numpy and matplotlib must be installed.
+      pip install numpy matplotlib
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -8,6 +56,24 @@ class TimewaveZero:
     Python implementation of Terence McKenna's Timewave Zero algorithm.
     Includes both the original 'Kelley' set (with the half-twist error) 
     and the corrected 'Watkins' set.
+
+    The algorithm models time as a fractal wave of novelty derived from the
+    64-hexagram King Wen sequence of the I Ching.  At its zero point — the
+    chosen 'attractor' date — novelty theoretically reaches infinity as all
+    patterns collapse into a single, unprecedented moment of maximum
+    connectivity.
+
+    Attributes
+    ----------
+    mode : str
+        Either 'watkins' (corrected, default) or 'kelley' (original with error).
+    data : np.ndarray
+        The 384-point numerical dataset used for fractal summation.
+
+    Usage
+    -----
+    tw = TimewaveZero(mode='watkins')
+    novelty_score = tw.get_novelty(days_to_zero=1000)
     """
 
     # The 'First Order of Difference' (FOD) from the King Wen Sequence (64 hexagrams)
@@ -20,6 +86,16 @@ class TimewaveZero:
     ])
 
     def __init__(self, mode='watkins'):
+        """
+        Initialise the TimewaveZero calculator.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Dataset variant to use: 'watkins' (corrected, default) or
+            'kelley' (original McKenna/Kelley implementation, contains the
+            half-twist error in the second 192 points).
+        """
         self.mode = mode.lower()
         self.data = self._generate_384_set()
 
@@ -27,6 +103,16 @@ class TimewaveZero:
         """
         Expands the 64 FOD values into the 384-point data set using McKenna's triplication logic.
         This is where the 'Half Twist' error occurs in the Kelley version.
+
+        The 384-point set is the core lookup table for the novelty algorithm.
+        It is produced by a triplication-and-inversion procedure applied to the
+        64 FOD values.  The Watkins correction fixes an indexing error in the
+        second half of the array that Kelley's original software introduced.
+
+        Returns
+        -------
+        np.ndarray
+            A 384-element array of integer novelty weights.
         """
         # WATKINS SET (Corrected - FULL 384 POINTS)
         watkins = np.array([
@@ -36,9 +122,11 @@ class TimewaveZero:
         if self.mode == 'watkins':
             return watkins
         else:
+            # Kelley mode: replace the second half with a reversed copy of the first half.
+            # This replicates the original half-twist error present in McKenna's software.
             kelley = np.copy(watkins)
             first_half = watkins[:192]
-            second_half = first_half[::-1] 
+            second_half = first_half[::-1]   # reverse = the 'twist'
             kelley[192:] = second_half
             return kelley
 
@@ -46,6 +134,37 @@ class TimewaveZero:
         """
         Calculates the novelty value for a given number of days before the zero date.
         The algorithm is a fractal summation of the data set across powers of 64.
+
+        The novelty function W(t) is computed as:
+
+            W(t) = sum over k of [ data[floor(t / 64^k) % 384] / 64^k ]
+
+        where t is the number of days before the attractor (zero) point,
+        and k ranges over a span of integer powers (here -3 to 12, giving 16 scales).
+
+        Linear interpolation between adjacent data points is used for sub-integer
+        index positions, producing a continuous rather than step-function output.
+
+        Lower output values = higher novelty (more pattern complexity, strangeness).
+        Higher output values = greater habit (repetition, stasis).
+
+        Parameters
+        ----------
+        days_to_zero : float
+            Number of days remaining until the zero/attractor date.
+            Pass 0.0 to get the value exactly at the zero point.
+            Negative values (post-zero) are accepted but produce artifact values.
+
+        Returns
+        -------
+        float
+            The scalar novelty value W(t) for the given temporal position.
+
+        Examples
+        --------
+        tw = TimewaveZero()
+        # Novelty on a date 365 days before the zero point:
+        print(tw.get_novelty(365))
         """
         # Novelty value W(t) = Sum [ v(t * 64^-k % 384) / 64^k ]
         total_novelty = 0.0
@@ -55,22 +174,72 @@ class TimewaveZero:
             divisor = 64.0**k
             index = (days_to_zero / divisor) % 384
             
+            # Linear interpolation between adjacent integer indices
             idx_low = int(index)
             idx_high = (idx_low + 1) % 384
             frac = index - idx_low
             
+            # Weighted contribution from this scale level
             val = (1 - frac) * self.data[idx_low] + frac * self.data[idx_high]
             total_novelty += val / divisor
             
         return total_novelty
 
+
 def parse_date(date_str):
+    """
+    Parse a date string in either 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS' format.
+
+    Parameters
+    ----------
+    date_str : str
+        The date string to parse.
+
+    Returns
+    -------
+    datetime
+        A datetime object corresponding to the parsed date.
+
+    Raises
+    ------
+    ValueError
+        If the string matches neither supported format.
+    """
     try:
         return datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
 
+
 def generate_graph(zero_date, start_date, mode, filename="novelty_chart.png"):
+    """
+    Generate and save a Timewave Zero novelty chart as a PNG image.
+
+    Plots novelty values from start_date up to (and including) zero_date,
+    using approximately 500 evenly-spaced sample points for a smooth curve.
+    The Y-axis is inverted so that the wave visually 'plunges' toward maximum
+    novelty at the right-hand edge of the chart — matching the convention used
+    in McKenna's original software.
+
+    The chart is styled with a dark background and cyan line for aesthetics
+    consistent with the original Timewave Zero software's visual language.
+
+    Parameters
+    ----------
+    zero_date : datetime
+        The attractor / zero date (right edge of the plot).
+    start_date : datetime
+        The earliest date to include in the plot (left edge).
+    mode : str
+        Dataset variant: 'watkins' or 'kelley'.
+    filename : str, optional
+        Output file path for the saved PNG.  Defaults to 'novelty_chart.png'
+        in the current working directory.
+
+    Side Effects
+    ------------
+    Writes a PNG file to `filename` and prints a confirmation message.
+    """
     tw = TimewaveZero(mode=mode)
     
     total_days = (zero_date - start_date).days
@@ -110,6 +279,7 @@ def generate_graph(zero_date, start_date, mode, filename="novelty_chart.png"):
     plt.tight_layout()
     plt.savefig(filename, facecolor='#111111')
     print(f"\nGraph saved as: {filename}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Timewave Zero / Novelty Theory Calculator")
